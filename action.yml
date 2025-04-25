@@ -1,0 +1,80 @@
+name: Build Nerves System
+
+outputs:
+  artifact_filename:
+    description: The generated artifact’s file name.
+    value: ${{ steps.artifact.outputs.filename }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup elixir
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: 27.3.3
+        elixir-version: 1.18.3-otp-27
+    - name: Bootstrap br2 env
+      id: br2_env
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: mix br2.bootstrap_env
+    - name: Cache br2 sources
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.dl
+        key: br2-sources-${{ steps.br2_env.outputs.nerves_system_br_version }}
+    - name: Cache br2 ccache
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.ccache
+        key: br2-ccache-${{ steps.br2_env.outputs.nerves_system_br_version }}-${{ runner.os }}-${{ runner.arch }}
+    - name: Setup br2 ccache
+      shell: bash
+      run: |
+        echo "BR2_CCACHE=y" >> $GITHUB_ENV
+        echo "BR2_CCACHE_DIR=$PWD/.ccache" >> $GITHUB_ENV
+        echo "BR2_CCACHE_INITIAL_SETUP=--max-size=10G" >> $GITHUB_ENV
+    - name: Download nerves_system_br hex package
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        wget \
+          https://repo.hex.pm/tarballs/nerves_system_br-${{ steps.br2_env.outputs.nerves_system_br_version }}.tar \
+          -O nerves_system_br.tar
+
+        tar -xf nerves_system_br.tar contents.tar.gz
+        mkdir nerves_system_br
+        tar -xzf contents.tar.gz -C nerves_system_br/
+    - name: Create Nerves' patched br2-external
+      shell: bash
+      env:
+        NERVES_BR_DL_DIR: ${{ github.workspace }}/.dl
+      run: |
+        mkdir .br2
+        echo "NERVES_BR_DL_DIR=${NERVES_BR_DL_DIR}" >> $GITHUB_ENV
+        $RUNNER_TEMP/nerves_system_br/create-build.sh nerves_defconfig .br2
+    - name: Download br2 source files
+      shell: bash
+      working-directory: ${{ github.workspace }}/.br2
+      run: make source
+    - name: Build
+      shell: bash
+      working-directory: ${{ github.workspace }}/.br2
+      run: make -j`nproc`
+    - name: Create artifact
+      id: artifact
+      shell: bash
+      working-directory: ${{ github.workspace }}/.br2
+      run: |
+        make system NERVES_ARTIFACT_NAME=${{ steps.br2_env.outputs.artifact_name }}
+        filename=${{ steps.br2_env.outputs.artifact_name }}.tar.gz
+        echo "filename=${filename}" >> $GITHUB_OUTPUT
+    - name: Archive artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact.outputs.filename }}
+        path: ${{ github.workspace }}/.br2/${{ steps.artifact.outputs.filename }}
+
+branding:
+  icon: package
+  color: gray-dark
